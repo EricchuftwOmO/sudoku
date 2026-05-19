@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sudoku</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #f5f5f7; --surface: #ffffff; --primary: #007aff; --accent: #007aff;
+  --text: #1d1d1f; --muted: #86868b; --cell-bg: #ffffff;
+  --highlight: rgba(0,122,255,0.06); --same-num: rgba(0,122,255,0.12);
+  --valid: #34c759; --invalid: #ff3b30; --complete: rgba(52,199,89,0.08);
+  --border: #d2d2d7; --border-thick: #8e8e93;
+  --shadow: 0 4px 24px rgba(0,0,0,0.08);
+}
+body { font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 40px 20px; -webkit-font-smoothing: antialiased; }
+h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: 20px; letter-spacing: -0.5px; }
+
+.info-panel {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+  background: var(--surface); border-radius: 16px; padding: 16px 20px;
+  margin-bottom: 20px; width: 100%; max-width: 400px;
+  box-shadow: var(--shadow);
+}
+.info-item { text-align: center; }
+.info-item .label { font-size: 0.65rem; text-transform: uppercase; color: var(--muted); letter-spacing: 0.5px; font-weight: 500; }
+.info-item .value { font-size: 1.1rem; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
+
+table { border-collapse: collapse; background: var(--surface); border-radius: 16px; overflow: hidden; box-shadow: var(--shadow); }
+td {
+  width: 44px; height: 44px; text-align: center; vertical-align: middle;
+  border: 1px solid var(--border); position: relative;
+  font-size: 18px; font-weight: 400; cursor: pointer; transition: background 0.2s ease;
+}
+td:nth-child(3n) { border-right: 2px solid var(--border-thick); }
+tr:nth-child(3n) td { border-bottom: 2px solid var(--border-thick); }
+td.given { color: var(--text); font-weight: 600; background: var(--cell-bg); }
+td.editable { color: var(--primary); background: var(--cell-bg); }
+td.highlight { background: var(--highlight); }
+td.same-num { background: var(--same-num); }
+td.focused { background: var(--accent) !important; color: #fff !important; font-weight: 600; border-radius: 8px; }
+td.conflict { color: var(--invalid) !important; font-weight: 600; animation: shake 0.3s; }
+td.row-complete, td.col-complete, td.box-complete { background: var(--complete); }
+
+@keyframes shake { 25% { transform: translateX(-2px); } 75% { transform: translateX(2px); } }
+@keyframes pop { 0% { transform: scale(0.85); opacity: 0.6; } 100% { transform: scale(1); opacity: 1; } }
+td.pop { animation: pop 0.15s ease-out; }
+
+.controls { margin-top: 20px; display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+button {
+  padding: 12px 28px; font-size: 0.9rem; font-weight: 500; border: none; border-radius: 980px;
+  cursor: pointer; background: var(--primary); color: #fff; transition: all 0.2s ease;
+  letter-spacing: -0.2px;
+}
+button:hover { background: #0066d6; transform: scale(1.02); }
+button:active { transform: scale(0.98); }
+#msg { margin-top: 16px; font-size: 0.95rem; min-height: 1.4em; font-weight: 500; }
+
+@media (max-width: 480px) {
+  td { width: 38px; height: 38px; font-size: 16px; }
+  .info-panel { grid-template-columns: repeat(2, 1fr); max-width: 340px; }
+  h1 { font-size: 1.3rem; }
+  body { padding: 24px 12px; }
+}
+</style>
+</head>
+<body>
+<h1>Sudoku</h1>
+<div class="info-panel">
+  <div class="info-item"><div class="label">Difficulty</div><div class="value" id="difficulty">Medium</div></div>
+  <div class="info-item"><div class="label">Time</div><div class="value" id="timer">0:00</div></div>
+  <div class="info-item"><div class="label">Mistakes</div><div class="value" id="mistakes">0</div></div>
+  <div class="info-item"><div class="label">Complete</div><div class="value" id="progress">0%</div></div>
+</div>
+<table id="board" role="grid" aria-label="Sudoku board"></table>
+<div class="controls">
+  <button onclick="newGame()">New Game</button>
+  <button onclick="checkSolution()">Check</button>
+</div>
+<p id="msg"></p>
+<script>
+const puzzles = [
+  {d:"Easy",   p:"530070000600195000098000060800060003400803001700020006060000280000419005000080079", s:"534678912672195348198342567859761423426853791713924856961537284287419635345286179"},
+  {d:"Medium", p:"020000000000600003074000800000200060800000003060004000003000270100005000000000040", s:"123456789589672143674319825931287564847561293265894317493128276718945632256733481"},
+  {d:"Hard",   p:"000000907000420180000705026100904000050000040000507009920108000034059000507000000", s:"462831957735429186891765326173964258658213749249587619926148573314659872587372461"}
+];
+
+// Pre-computed lookup tables (computed once, used every frame)
+const cellRow = [], cellCol = [], cellBox = [], peers = [], groups = [];
+for (let i = 0; i < 81; i++) {
+  cellRow[i] = Math.floor(i / 9);
+  cellCol[i] = i % 9;
+  cellBox[i] = Math.floor(cellRow[i] / 3) * 3 + Math.floor(cellCol[i] / 3);
+  const s = new Set();
+  for (let k = 0; k < 9; k++) {
+    s.add(cellRow[i] * 9 + k);
+    s.add(k * 9 + cellCol[i]);
+    const br = Math.floor(cellRow[i] / 3) * 3, bc = Math.floor(cellCol[i] / 3) * 3;
+    s.add((br + Math.floor(k / 3)) * 9 + bc + k % 3);
+  }
+  s.delete(i);
+  peers[i] = [...s];
+}
+for (let i = 0; i < 9; i++) {
+  groups.push(Array.from({length: 9}, (_, k) => i * 9 + k)); // rows
+  groups.push(Array.from({length: 9}, (_, k) => k * 9 + i)); // cols
+  groups.push(Array.from({length: 9}, (_, k) => (Math.floor(i/3)*3+Math.floor(k/3))*9+(i%3)*3+k%3)); // boxes
+}
+
+let board, solution, given, focusIdx = null, mistakes = 0, timerInterval, startTime;
+let cellElements = []; // cached DOM references
+let conflicts = new Set(); // persistent conflict set
+let totalEditable = 0;
+
+function startTimer() {
+  clearInterval(timerInterval);
+  startTime = Date.now();
+  timerInterval = setInterval(() => {
+    const s = Math.floor((Date.now() - startTime) / 1000);
+    document.getElementById('timer').textContent = `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
+  }, 1000);
+}
+
+function newGame() {
+  const puz = puzzles[Math.floor(Math.random() * puzzles.length)];
+  board = puz.p.split('').map(Number);
+  solution = puz.s.split('').map(Number);
+  given = board.map(v => v !== 0);
+  focusIdx = null; mistakes = 0;
+  totalEditable = given.filter(g => !g).length;
+  document.getElementById('mistakes').textContent = '0';
+  document.getElementById('difficulty').textContent = puz.d;
+  document.getElementById('msg').textContent = '';
+  render();
+  recomputeConflicts();
+  updateProgress();
+  applyHighlights();
+  startTimer();
+}
+
+// Full conflict recomputation — only called on new game
+function recomputeConflicts() {
+  conflicts = new Set();
+  for (const g of groups) {
+    const seen = {};
+    for (const idx of g) {
+      const v = board[idx];
+      if (!v) continue;
+      if (seen[v] !== undefined) { conflicts.add(idx); conflicts.add(seen[v]); }
+      else seen[v] = idx;
+    }
+  }
+}
+
+// Incremental conflict update — only checks groups affected by changed cell
+function updateConflictsFor(idx) {
+  const r = cellRow[idx], c = cellCol[idx], b = cellBox[idx];
+  const relevantGroups = [groups[r * 3], groups[c * 3 + 1], groups[b * 3 + 2]];
+  for (const g of relevantGroups) for (const i of g) conflicts.delete(i);
+  for (const g of relevantGroups) {
+    const seen = {};
+    for (const i of g) {
+      const v = board[i];
+      if (!v) continue;
+      if (seen[v] !== undefined) { conflicts.add(i); conflicts.add(seen[v]); }
+      else seen[v] = i;
+    }
+  }
+}
+
+function getCompleteGroups() {
+  const complete = {rows: new Set(), cols: new Set(), boxes: new Set()};
+  for (let i = 0; i < 9; i++) {
+    const row = groups[i * 3], col = groups[i * 3 + 1], box = groups[i * 3 + 2];
+    if (isGroupComplete(row)) complete.rows.add(i);
+    if (isGroupComplete(col)) complete.cols.add(i);
+    if (isGroupComplete(box)) complete.boxes.add(i);
+  }
+  return complete;
+}
+
+function isGroupComplete(g) {
+  let mask = 0;
+  for (const i of g) {
+    const v = board[i];
+    if (!v) return false;
+    mask |= (1 << v);
+  }
+  return mask === 0x3FE; // bits 1-9 set
+}
+
+function updateProgress() {
+  let filled = 0;
+  for (let i = 0; i < 81; i++) if (board[i] && !given[i]) filled++;
+  document.getElementById('progress').textContent = `${Math.round((filled / totalEditable) * 100)}%`;
+}
+
+function applyHighlights() {
+  const complete = getCompleteGroups();
+  // Compute desired classes for each cell, apply only diffs
+  for (let i = 0; i < 81; i++) {
+    const td = cellElements[i];
+    const r = cellRow[i], c = cellCol[i], b = cellBox[i];
+    let cls = given[i] ? 'given' : 'editable';
+    if (conflicts.has(i)) cls += ' conflict';
+    if (complete.rows.has(r)) cls += ' row-complete';
+    if (complete.cols.has(c)) cls += ' col-complete';
+    if (complete.boxes.has(b)) cls += ' box-complete';
+    if (focusIdx !== null) {
+      const fr = cellRow[focusIdx], fc = cellCol[focusIdx], fb = cellBox[focusIdx];
+      if (r === fr || c === fc || b === fb) cls += ' highlight';
+      if (board[focusIdx] && board[i] === board[focusIdx] && i !== focusIdx) cls += ' same-num';
+      if (i === focusIdx) cls += ' focused';
+    }
+    if (td.className !== cls) td.className = cls; // only touch DOM if changed
+  }
+}
+
+function render() {
+  const table = document.getElementById('board');
+  table.innerHTML = '';
+  cellElements = [];
+  for (let r = 0; r < 9; r++) {
+    const tr = document.createElement('tr');
+    for (let c = 0; c < 9; c++) {
+      const td = document.createElement('td');
+      const i = r * 9 + c;
+      td.dataset.idx = i;
+      td.setAttribute('role', 'gridcell');
+      td.setAttribute('aria-label', `Row ${r+1} Column ${c+1}${board[i] ? ' value '+board[i] : ' empty'}`);
+      td.tabIndex = 0;
+      if (given[i]) { td.textContent = board[i]; }
+      else if (board[i]) { td.textContent = board[i]; }
+      td.onclick = () => { focusIdx = i; td.focus(); applyHighlights(); };
+      td.onfocus = () => { focusIdx = i; applyHighlights(); };
+      cellElements[i] = td;
+      tr.appendChild(td);
+    }
+    table.appendChild(tr);
+  }
+}
+
+function placeNumber(num) {
+  if (focusIdx === null || given[focusIdx]) return;
+  board[focusIdx] = num;
+  const td = cellElements[focusIdx];
+  td.textContent = num || '';
+  td.classList.add('pop');
+  setTimeout(() => td.classList.remove('pop'), 200);
+  if (num && solution[focusIdx] !== num) {
+    mistakes++;
+    document.getElementById('mistakes').textContent = mistakes;
+  }
+  updateConflictsFor(focusIdx);
+  updateProgress();
+  applyHighlights();
+}
+
+document.addEventListener('keydown', e => {
+  if (focusIdx === null) return;
+  const r = cellRow[focusIdx], c = cellCol[focusIdx];
+  if (e.key >= '1' && e.key <= '9') { placeNumber(parseInt(e.key)); e.preventDefault(); }
+  else if (e.key === 'Backspace' || e.key === 'Delete' || e.key === '0') { placeNumber(0); e.preventDefault(); }
+  else if (e.key === 'ArrowUp' && r > 0) { focusIdx -= 9; cellElements[focusIdx].focus(); }
+  else if (e.key === 'ArrowDown' && r < 8) { focusIdx += 9; cellElements[focusIdx].focus(); }
+  else if (e.key === 'ArrowLeft' && c > 0) { focusIdx -= 1; cellElements[focusIdx].focus(); }
+  else if (e.key === 'ArrowRight' && c < 8) { focusIdx += 1; cellElements[focusIdx].focus(); }
+});
+
+function checkSolution() {
+  const msg = document.getElementById('msg');
+  if (board.includes(0)) { msg.textContent = 'Fill all cells first.'; msg.style.color = '#a0a0b0'; return; }
+  const ok = conflicts.size === 0;
+  if (ok) clearInterval(timerInterval);
+  msg.textContent = ok ? '✓ Puzzle Complete!' : '✗ There are errors.';
+  msg.style.color = ok ? '#4caf50' : '#e94560';
+}
+
+newGame();
+</script>
+</body>
+</html>
